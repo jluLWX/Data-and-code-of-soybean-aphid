@@ -1,345 +1,180 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from scipy import interpolate
 
-# ===================== 1. 核心参数与实验背景配置 =====================
-test_area = 10000  # 试验田面积：10000 m²（1公顷）
-data_days = 31  # 观测天数：31天（Day 1-31）
-data_idx = np.arange(data_days)  # 索引0-30（对应Day 1-31）
-experiment_info = "1-hectare experimental field at Jilin Agricultural University"
+# ===================== 数据 =====================
+obs_dates_str = [
+    '17-Jul', '20-Jul', '23-Jul', '26-Jul', '29-Jul',
+    '2-Aug', '5-Aug', '7-Aug', '10-Aug', '14-Aug'
+]
+obs_aphid_raw = np.array([3,6,3,5,24,35,17,17,23,8])
+obs_rel_days = np.array([0,3,6,9,12,15,18,20,23,27])
+full_rel_days = np.arange(0, 28)
 
-# ===================== 2. 数据导入与预处理 =====================
-male_data_31 = np.array(
-    [2, 3, 12, 5, 4, 7, 9, 47, 38, 41, 20, 71, 94, 56, 64, 98, 117, 339, 243, 215, 182, 135, 140, 106, 75, 93, 35, 9, 6,
-     1, 1])
-total_data_31 = male_data_31 * 2  # 原始总数（个）
-std_total_data_31 = total_data_31 / test_area  # 标准化总数（individuals/m²）
-std_male_data_31 = male_data_31 / test_area  # 标准化雄性数（individuals/m²）
+# ===================== 插值 + 7天平均 =====================
+interp_func = interpolate.CubicSpline(obs_rel_days, obs_aphid_raw)
+full_aphid_interp = interp_func(full_rel_days)
+full_aphid_interp[full_aphid_interp < 0] = 0
 
-# 数据框构建
-data_df = pd.DataFrame({
-    'Day_Index': data_idx,
-    'Actual_Day': data_idx + 1,
-    'Male_Count_Raw': male_data_31,
-    'Total_Count_Raw': total_data_31,
-    'Male_Count_Standardized': std_male_data_31,
-    'Total_Count_Standardized': std_total_data_31,
-    'Is_Outlier': False,
-    'Total_Count_Standardized_Cleaned': std_total_data_31,
-    'Total_Count_Raw_Cleaned': total_data_31
+aphid_interp_series = pd.Series(full_aphid_interp)
+aphid_ma7 = aphid_interp_series.rolling(
+    window=7, center=True, min_periods=1
+).mean()
+full_aphid_ma7 = aphid_ma7.values
+area = 5000
+
+# ===================== 画图（核心：标题在外部上方+高度一致+图表丰富化）=====================
+plt.rcParams.update({
+    'font.family': 'Arial',
+    'font.size': 9,
+    'axes.linewidth': 1.2,
+    'xtick.major.width': 1.2,
+    'ytick.major.width': 1.2,
+    'legend.frameon': True,
+    'legend.fancybox': True,
+    'legend.shadow': False,
+    'legend.framealpha': 0.9
 })
 
-# 异常值检测与清洗
-Q1 = np.percentile(data_df['Total_Count_Standardized'], 25)
-Q3 = np.percentile(data_df['Total_Count_Standardized'], 75)
-IQR = Q3 - Q1
-upper_bound = Q3 + 1.5 * IQR
-data_df.loc[data_df['Total_Count_Standardized'] > upper_bound, 'Is_Outlier'] = True
-outliers_df = data_df[data_df['Is_Outlier'] == True].copy()
+fig = plt.figure(figsize=(12, 6))  # 固定画布尺寸
 
+# ------------------- 左：表格（标题在外部上方左上角）-------------------
+# 轴位置：[左, 下, 宽, 高] → 顶部留空放标题（height=0.8，top=0.08+0.8=0.88）
+ax_table = fig.add_axes([0.03, 0.08, 0.30, 0.80])
+ax_table.axis('off')
 
-def clean_outliers_standardized(data, outliers_mask):
-    data_cleaned = data.copy()
-    outliers_idx = np.where(outliers_mask)[0]
-    for idx in outliers_idx:
-        if idx == 0:
-            replace_val = data[1:4].mean()
-        elif idx == len(data) - 1:
-            replace_val = data[-4:-1].mean()
-        else:
-            replace_val = data[max(0, idx - 1):min(len(data), idx + 2)].mean()
-        data_cleaned[idx] = replace_val
-    return data_cleaned
-
-
-data_df['Total_Count_Standardized_Cleaned'] = clean_outliers_standardized(
-    data=data_df['Total_Count_Standardized'].values,
-    outliers_mask=data_df['Is_Outlier'].values
+# (A) 标题：在表格轴的外部上方左上角（基于画布坐标，精准对齐）
+fig.text(
+    0.03, 0.90,  # 画布坐标：x=0.03（和表格左边界对齐），y=0.90（表格顶部上方）
+    '(A) Observed Data of Soybean Aphids',
+    fontsize=11, fontweight='bold',
+    va='bottom', ha='left'  # 底部对齐表格顶部，左对齐表格左边界
 )
-data_df['Total_Count_Raw_Cleaned'] = data_df['Total_Count_Standardized_Cleaned'] * test_area
 
-# ===================== 3. 图表绘制（所有子图双Y轴+间距调整） =====================
-plt.rcParams['font.family'] = 'Arial'
-plt.rcParams['font.size'] = 10
-plt.rcParams['axes.unicode_minus'] = False
-plt.rcParams['axes.linewidth'] = 1.2
-plt.rcParams['axes.titlepad'] = 15  # 全局调整标题间距（默认12，增大到15）
-
-fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 12))
-
-# -------------------------- 子图1：箱线图（双Y轴） --------------------------
-# 左Y轴：标准化密度（主轴）
-ax1_left = ax1
-box_plot = ax1_left.boxplot(
-    data_df['Total_Count_Standardized'],
-    patch_artist=True,
-    boxprops=dict(facecolor='lightblue', alpha=0.8, edgecolor='black', linewidth=1.2),
-    flierprops=dict(marker='o', markerfacecolor='red', markersize=8, markeredgecolor='darkred', linewidth=1),
-    medianprops=dict(color='darkblue', linewidth=2.5),
-    whiskerprops=dict(color='black', linewidth=1.2),
-    capprops=dict(color='black', linewidth=1.2)
+# 表格：填满轴区域，左上角对齐
+table_data = [[d, str(v)] for d, v in zip(obs_dates_str, obs_aphid_raw)]
+table = ax_table.table(
+    cellText=table_data,
+    colLabels=['Date', 'Aphid count'],
+    cellLoc='center',
+    loc='center',  # 表格在轴内居中
+    colWidths=[0.6, 0.4],
+    bbox=[0.0, 0.0, 1.0, 1.0]
 )
-ax1_left.axhline(y=upper_bound, color='orange', linestyle='--', linewidth=1.5,
-                 label=f'Upper Threshold: {upper_bound:.6f} ind/m²')
-ax1_left.scatter(
-    np.ones_like(data_df['Male_Count_Standardized']),
-    data_df['Male_Count_Standardized'],
-    color='gray',
-    s=30,
-    alpha=0.7,
-    label='Std Male Count (Ref.)'
+table.auto_set_font_size(False)
+table.set_fontsize(9)
+table.scale(1.0, 2.0)
+
+# 表头样式
+for i in range(2):
+    table[(0, i)].set_facecolor('#4472C4')
+    table[(0, i)].set_text_props(weight='bold', color='white')
+
+# ------------------- 右：曲线图（丰富化优化）-------------------
+# 轴位置：[左, 下, 宽, 高] → bottom=0.08、height=0.80（和表格完全一致）
+ax1 = fig.add_axes([0.38, 0.08, 0.58, 0.80])
+ax2 = ax1.twinx()
+
+# (B) 标题：在曲线图轴的外部上方左上角（和(A)同y坐标，x对齐图左边界）
+fig.text(
+    0.38, 0.90,  # 画布坐标：x=0.38（和图左边界对齐），y=0.90（和(A)同高度）
+    '(B) Cleaning and Standardization of Monitoring Data',
+    fontsize=11, fontweight='bold',
+    va='bottom', ha='left'  # 底部对齐图顶部，左对齐图左边界
 )
-ax1_left.set_title('(A) Box Plot of Standardized Total Count', fontsize=12, loc='left', fontweight='bold',pad=10)
-ax1_left.set_ylabel('Standardized Count (individuals/m²)', fontsize=11, color='black')
-ax1_left.tick_params(axis='y', labelcolor='black')
-ax1_left.legend(fontsize=9, loc='upper left', frameon=True, fancybox=True, shadow=False, framealpha=0.9)
-ax1_left.grid(False)
 
-# 右Y轴：原始计数（对应标准化值×面积）
-ax1_right = ax1_left.twinx()
-ax1_right.set_ylabel('Raw Count (Individuals)', fontsize=11, color='darkred')
-ax1_right.tick_params(axis='y', labelcolor='darkred')
-# 右轴范围与左轴对应（原始值 = 标准化值 × 10000）
-y_min_left, y_max_left = ax1_left.get_ylim()
-ax1_right.set_ylim(y_min_left * test_area, y_max_left * test_area)
+# 1. 分段背景色（按蚜虫数量趋势划分阶段）
+# 低发期（0-9天）、高发期（9-15天）、衰退期（15-27天）
+ax1.axvspan(0, 9, alpha=0.1, color='lightgray', label='Low Incidence Period')
+ax1.axvspan(9, 15, alpha=0.15, color='lightcoral', label='Peak Incidence Period')
+ax1.axvspan(15, 27, alpha=0.1, color='lightblue', label='Decline Period')
 
-# -------------------------- 子图2：清洗前时间序列（双Y轴+增大标题间距） --------------------------
-# 左Y轴：原始计数
-ax2_left = ax2
-line1 = ax2_left.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Raw'],
-    color='blue',
-    linestyle='-',
-    linewidth=2,
-    label='Total Count (Raw, ind.)'
-)
-line2 = ax2_left.plot(
-    data_df['Actual_Day'],
-    data_df['Male_Count_Raw'],
-    color='gray',
-    linestyle='-',
-    linewidth=1.5,
-    label='Male Count (Raw, ind.)'
-)
-if len(outliers_df) > 0:
-    ax2_left.scatter(
-        outliers_df['Actual_Day'],
-        outliers_df['Total_Count_Raw'],
-        color='red',
-        s=100,
-        zorder=5,
-        label=f'Outlier (n={len(outliers_df)})'
-    )
-    for _, row in outliers_df.iterrows():
-        ax2_left.annotate(
-            f'Day {int(row["Actual_Day"])}\nRaw: {int(row["Total_Count_Raw"])} ind.\nStd: {row["Total_Count_Standardized"]:.6f} ind/m²',
-            xy=(row['Actual_Day'], row['Total_Count_Raw']),
-            xytext=(row['Actual_Day'] - 5, row['Total_Count_Raw'] - 80),
-            fontsize=8,
-            fontweight='bold',
-            color='red',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9)
-        )
-ax2_left.set_title('(B) Time Series of Raw & Standardized Counts (Before Cleaning)', fontsize=12, loc='left', fontweight='bold',
-                   pad=10)  # 单独增大间距
-ax2_left.set_xlabel('Day (1-31)', fontsize=11)
-ax2_left.set_ylabel('Raw Count (Individuals)', fontsize=11, color='black')
-ax2_left.tick_params(axis='y', labelcolor='black')
-ax2_left.set_ylim(0, max(data_df['Total_Count_Raw'].max(), data_df['Male_Count_Raw'].max()) * 1.2)
+# 2. 绘制曲线（优化样式）
+# 插值曲线：虚线+轻微透明
+ax1.plot(full_rel_days, full_aphid_interp, color='black', linestyle='--',
+         linewidth=1.2, label='Interpolated Soybean Aphid', alpha=0.7)
+# 7天平均：实线+加粗+深蓝色
+ax1.plot(full_rel_days, full_aphid_ma7, color='#0047AB',
+         linewidth=2.5, label='7-day Moving Average', alpha=0.9)
+# 观测点：更大尺寸+渐变色+边框
+ax1.scatter(obs_rel_days, obs_aphid_raw, color='#D55E00', s=60,
+            zorder=10, label='Observed', edgecolor='black', linewidth=1)
 
-# 右Y轴：标准化密度
-ax2_right = ax2_left.twinx()
-line3 = ax2_right.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Standardized'],
-    color='darkblue',
-    linestyle='--',
-    linewidth=2,
-    label='Total Count (Std, ind/m²)'
-)
-ax2_right.set_ylabel('Standardized Count (individuals/m²)', fontsize=11, color='darkblue')
-ax2_right.tick_params(axis='y', labelcolor='darkblue')
-ax2_right.set_ylim(0, max(data_df['Total_Count_Standardized'].max(), data_df['Male_Count_Standardized'].max()) * 1.2)
+# 3. 关键节点标注（峰值、谷值）
+peak_day = full_rel_days[np.argmax(full_aphid_ma7)]
+peak_value = full_aphid_ma7[np.argmax(full_aphid_ma7)]
+ax1.annotate(f'Peak: {peak_value:.1f} ind',
+             xy=(peak_day, peak_value), xytext=(5, 10),
+             textcoords='offset points', fontsize=9, fontweight='bold',
+             bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.8),
+             arrowprops=dict(arrowstyle='->', color='red', lw=1.2))
 
-# 合并图例
-lines = line1 + line2 + line3
-labels = [l.get_label() for l in lines]
-ax2_left.legend(lines, labels, fontsize=8.5, loc='upper right', frameon=True, fancybox=True, shadow=False)
-ax2_left.grid(False)
+# 4. 观测值标注优化（移除边框+调大字体）
+for d, v in zip(obs_rel_days, obs_aphid_raw):
+    ax1.annotate(str(v), (d, v), xytext=(0, 10), textcoords='offset points',
+                 fontsize=10, ha='center', zorder=11)  # 移除bbox参数（边框），字体调大到10
 
-# -------------------------- 子图3：清洗前后对比（双Y轴） --------------------------
-# 左Y轴：原始计数
-ax3_left = ax3
-line1 = ax3_left.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Raw'],
-    color='blue',
-    linestyle='--',
-    linewidth=1.5,
-    label='Before Cleaning (Raw, ind.)'
-)
-line2 = ax3_left.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Raw_Cleaned'],
-    color='darkgreen',
-    linestyle='-',
-    linewidth=2.5,
-    marker='o',
-    markersize=4,
-    label='After Cleaning (Raw, ind.)'
-)
-if len(outliers_df) > 0:
-    ax3_left.scatter(
-        outliers_df['Actual_Day'],
-        outliers_df['Total_Count_Raw_Cleaned'],
-        color='darkgreen',
-        s=120,
-        zorder=5,
-        label='Cleaned Value (Raw, ind.)'
-    )
-ax3_left.set_title('(C) Comparison: Raw vs. Standardized Count (Before vs. After Cleaning)', fontsize=12,loc='left',
-                   fontweight='bold',pad=10)
-ax3_left.set_xlabel('Day (1-31)', fontsize=11)
-ax3_left.set_ylabel('Raw Count (Individuals)', fontsize=11, color='black')
-ax3_left.tick_params(axis='y', labelcolor='black')
-ax3_left.set_ylim(0, max(data_df['Total_Count_Raw'].max(), data_df['Total_Count_Raw_Cleaned'].max()) * 1.2)
+# 5. 坐标轴优化
+y1_max = np.max(obs_aphid_raw) * 1.3  # 增加顶部留白
+y2_max = y1_max / area
+ax1.set_xlabel('Time (Day)', fontsize=10, fontweight='bold')
+ax1.set_ylabel('Soybean aphid abundance (individuals)', fontsize=10, fontweight='bold')
+ax2.set_ylabel(r'Density (individuals/ m²)', color='#0047AB', fontsize=10, fontweight='bold')
 
-# 右Y轴：标准化密度
-ax3_right = ax3_left.twinx()
-line3 = ax3_right.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Standardized'],
-    color='lightblue',
-    linestyle='--',
-    linewidth=1.5,
-    label='Before Cleaning (Std, ind/m²)'
-)
-line4 = ax3_right.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Standardized_Cleaned'],
-    color='darkblue',
-    linestyle='-',
-    linewidth=2.5,
-    marker='x',
-    markersize=4,
-    label='After Cleaning (Std, ind/m²)'
-)
-ax3_right.set_ylabel('Standardized Count (individuals/m²)', fontsize=11, color='darkblue')
-ax3_right.tick_params(axis='y', labelcolor='darkblue')
-ax3_right.set_ylim(0, max(data_df['Total_Count_Standardized'].max(),
-                          data_df['Total_Count_Standardized_Cleaned'].max()) * 1.2)
+# Y轴刻度优化
+ax1.set_xticks(np.arange(0, 28, 3))  # 每3天一个刻度，更密集
+ax1.set_yticks(np.arange(0, y1_max+1, 5))  # 每5个个体一个刻度
+ax2.set_yticks(np.arange(0, y2_max+0.001, 0.001))  # 密度刻度细化
 
-# 合并图例
-lines = line1 + line2 + line3 + line4
-labels = [l.get_label() for l in lines]
-ax3_left.legend(lines, labels, fontsize=8, loc='upper right', frameon=True, fancybox=True, shadow=False)
-ax3_left.grid(False)
+# 轴样式优化
+ax2.tick_params(axis='y', labelcolor='#0047AB', width=1.2)
+ax2.spines['right'].set_color('#0047AB')
+ax2.spines['right'].set_linewidth(1.2)
+#ax1.spines['top'].set_visible(False)  # 隐藏顶部边框
+ax2.spines['top'].set_visible(False)
 
-# -------------------------- 子图4：最终清洗数据（双Y轴+增大标题间距） --------------------------
-# 左Y轴：原始计数
-ax4_left = ax4
-line1 = ax4_left.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Raw_Cleaned'],
-    color='darkgreen',
-    linestyle='-',
-    linewidth=3,
-    marker='o',
-    markersize=5,
-    label='Cleaned Total Count (Raw, ind.)'
-)
-line2 = ax4_left.plot(
-    data_df['Actual_Day'],
-    data_df['Male_Count_Raw'],
-    color='gray',
-    linestyle='--',
-    linewidth=2,
-    marker='s',
-    markersize=3,
-    alpha=0.7,
-    label='Male Count (Raw, ind.)'
-)
-if len(outliers_df) > 0:
-    outlier_days = outliers_df['Actual_Day'].values
-    outlier_raw_vals = outliers_df['Total_Count_Raw_Cleaned'].values
-    outlier_std_vals = outliers_df['Total_Count_Standardized_Cleaned'].values
+# 6. 网格线（轻量级，不杂乱）
+ax1.grid(True, axis='y', alpha=0.3, linestyle='-', linewidth=0.8)
+ax1.set_axisbelow(True)  # 网格线在曲线下方
 
-    ax4_left.scatter(
-        outlier_days,
-        outlier_raw_vals,
-        color='red',
-        marker='*',
-        s=300,
-        zorder=10,
-        edgecolors='white',
-        linewidth=2,
-        label='Outlier Replacement'
-    )
+# 7. 图例优化（多列布局+位置调整）
+ax1.legend(loc='upper right', ncol=2, fontsize=8.5, columnspacing=1.0, handletextpad=0.5)
 
-    for day, raw_val, std_val in zip(outlier_days, outlier_raw_vals, outlier_std_vals):
-        ax4_left.annotate(
-            f'Day {int(day)}\nRaw: {int(raw_val)} ind.\nStd: {std_val:.6f} ind/m²',
-            xy=(day, raw_val),
-            xytext=(day + 1, raw_val + 50),
-            fontsize=8,
-            fontweight='bold',
-            color='darkred',
-            ha='left',
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9)
-        )
+# 8. 补充统计信息文本框
+stats_text = f"""Key Statistics:
+• Peak abundance: {peak_value:.1f} individuals
+• Peak density: {peak_value/area:.6f} ind/m²
+• Total observation days: 27
+• Area: {area} m²"""
+ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes,
+         fontsize=8, verticalalignment='top',
+         bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8))
 
+# 坐标轴范围
+ax1.set_xlim(0, 27)
+ax1.set_ylim(0, y1_max)
+ax2.set_ylim(0, y2_max)
 
-
-ax4_left.set_title('(D) Final Cleaned Data: Raw vs. Standardized Count', fontsize=12, fontweight='bold',loc='left',
-                   pad=10)  # 单独增大间距
-ax4_left.set_xlabel('Day (1-31)', fontsize=11)
-ax4_left.set_ylabel('Raw Count (Individuals)', fontsize=11, color='black')
-ax4_left.tick_params(axis='y', labelcolor='black')
-ax4_left.set_ylim(0, max(data_df['Total_Count_Raw_Cleaned'].max(), data_df['Male_Count_Raw'].max()) * 1.2)
-
-# 右Y轴：标准化密度
-ax4_right = ax4_left.twinx()
-line3 = ax4_right.plot(
-    data_df['Actual_Day'],
-    data_df['Total_Count_Standardized_Cleaned'],
-    color='darkblue',
-    linestyle='-',
-    linewidth=2,
-    marker='x',
-    markersize=4,
-    label='Cleaned Total Count (Std, ind/m²)'
-)
-ax4_right.set_ylabel('Standardized Count (individuals/m²)', fontsize=11, color='darkblue')
-ax4_right.tick_params(axis='y', labelcolor='darkblue')
-ax4_right.set_ylim(0, max(data_df['Total_Count_Standardized_Cleaned'].max(),
-                          data_df['Male_Count_Standardized'].max()) * 1.2)
-
-# 合并图例
-lines = line1 + line2 + line3
-labels = [l.get_label() for l in lines]
-ax4_left.legend(
-    lines, labels,
-    fontsize=8.5,
-    loc='upper right',
-    frameon=True,
-    fancybox=True,
-    shadow=False,
-    framealpha=0.9
-)
-ax4_left.grid(False)
-
-# -------------------------- 全局布局调整 --------------------------
-plt.tight_layout(pad=3.0)  # 增大子图间距（默认1.0，调整为3.0）
-plt.savefig('Figure_2_Data_Cleaning_Standardization.png', dpi=300, bbox_inches='tight')
+# 保存+显示（避免裁剪标题）
+plt.savefig('Table+Plot_SCI_0-27days_enhanced.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-# ===================== 4. 输出最终数据 =====================
-final_data = data_df[
-    ['Actual_Day', 'Total_Count_Raw_Cleaned', 'Total_Count_Standardized_Cleaned', 'Male_Count_Standardized']].round(6)
-final_data.columns = ['Day', 'Raw_Total_Count_Cleaned (individuals)', 'Std_Total_Count_Cleaned (individuals/m²)',
-                      'Std_Male_Count (individuals/m²)']
-print("\n【Final Cleaned Data for Model Fitting】")
-print(final_data.to_string(index=False))
-final_data.to_csv('Cleaned_Pest_Data.csv', index=False)
-print("\nData saved to 'Cleaned_Pest_Data.csv'")
+# ===================== 数据输出 =====================
+print("="*60)
+print("7天滑动平均数据（0-27天）")
+print("="*60)
+print(f"数据时间范围：0 - 27 天")
+print(f"27天插值值：{full_aphid_interp[-1]:.2f} 头")
+print(f"27天7天移动平均：{full_aphid_ma7[-1]:.2f} 头")
+print(f"27天蚜虫密度（移动平均）：{full_aphid_ma7[-1]/area:.6f} individuals/m²")
+print(f"峰值出现时间：第 {peak_day} 天，峰值数量：{peak_value:.2f} 头")
+
+df_ma7 = pd.DataFrame({
+    'Day': full_rel_days,
+    'Interpolated_Aphid': full_aphid_interp,
+    '7day_Moving_Average': full_aphid_ma7,
+    'Density_MA7': full_aphid_ma7 / area
+})
+df_ma7.to_csv('soybean_aphid_ma7_0-27days.csv', index=False)
+print("\n✅ 数据已导出到：soybean_aphid_ma7_0-27days.csv")
